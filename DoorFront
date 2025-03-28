@@ -1,0 +1,24 @@
+#Trying collecting images for a specific street in zipcode
+zipcode = '10040'
+street_name = 'West 192 Street'
+clipped_streets = visualize_zipcode(zipcode, street_nm = street_name)[1]
+if clipped_streets is not None:
+  street_gdf = clipped_streets[clipped_streets['street_nm'] == street_name]
+  points = []
+  for geom in street_gdf.geometry:
+      if isinstance(geom, MultiLineString):
+          for line in geom.geoms:
+              points.extend([coord for coord in line.coords])
+      elif isinstance(geom, LineString):
+          points.extend([coord for coord in geom.coords])
+      else:
+          print(f"Unexpected geometry type: {type(geom)}")
+  points = verify_street(points)
+  for element in points:
+    first_coord = element[0]
+    last_coord = element[-1]
+    print("first pt:",first_coord[1], ",", first_coord[0])
+    print( "last pt:", last_coord[1], ",", last_coord[0])
+    collect_images(first_coord[1], first_coord[0], last_coord[1], last_coord[0], street_name, zipcode)
+    print()
+    print(store_df) #prints data from dataframe that has the URL stored with coordinates
