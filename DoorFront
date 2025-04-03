@@ -1,3 +1,293 @@
+!gdown 11hTDkqa-ASYE4l7AWw9GrAonzYJRGliq -O DCM_StreetCenterLine.geojson
+!gdown 15aVTJWzgRhIYUrZwwJNqW8rgjCxwE8z9 -O 2010_Neighborhood_Tabulation_Areas_NTAs.geojson
+# https://drive.google.com/file/d/11hTDkqa-ASYE4l7AWw9GrAonzYJRGliq/view?usp=sharing
+!gdown 1qKlFukTkVqmRgJoPjMC2DmUA9sJ6-nCG -O Zipcodeareas.geojson #zipcode geojson file from Rachel's drive
+!pip install folium==0.17.0 matplotlib mapclassify rtree geopandas
+!pip install utm
+import geopandas as gpd
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import shapely.geometry as geom
+import folium
+import math
+import utm
+import csv
+import os
+import requests
+import json
+from shapely.geometry import Polygon, LineString, Point
+
+#variable for boroughs of New york
+p_gdf = gpd.read_file("./2010_Neighborhood_Tabulation_Areas_NTAs.geojson")
+
+#Saving only manhattan into a gdf
+n_gdf = p_gdf[p_gdf["boro_name"] == "Manhattan"].copy()
+n_gdf.reset_index(inplace=True)
+
+#variable for centerline data
+centerline_gdf = gpd.read_file("./DCM_StreetCenterLine.geojson")
+manhattan_centerline_gdf = centerline_gdf[centerline_gdf["borough"] == "Manhattan"].copy()
+manhattan_centerline_gdf.reset_index(inplace=True)
+
+#Filtering the data using the street name and the index
+manhattan_centerline_gdf.sort_values(by= ["street_nm","index"], inplace=True)
+
+manhattan_centerline_gdf = manhattan_centerline_gdf.filter(items = ['borough','street_nm','geometry'])
+manhattan_centerline_gdf.reset_index(inplace=True)
+
+# Storing small segment of avenue 1 for practice purposes
+print(manhattan_centerline_gdf[manhattan_centerline_gdf['street_nm'] == '1 Avenue'].tail(10))
+# manhattan_centerline_gdf.iloc[19] chosen arbitrarily from 1 Avenue geometries
+gdf_1ave = manhattan_centerline_gdf.iloc[19]
+
+def verify_street(points, breakpoint = 0, verified_streets = []):
+  #print(f"Starting points: {points}")
+  lat1, lon1 = points[0][1], points[0][0]
+  coord_1 = utm.from_latlon(lat1,lon1)
+  initial_breakpoint = breakpoint
+  old_heading = 361 # 361 to put it out of range of possible headings
+  verified_street = [points[breakpoint]]
+  #print(f"Here are the points: {points}")
+  old_point = points[breakpoint] # creating comparison point to disregard duplicate sequential coordinates that seem to be somehow included in a few street dataframes
+  for point in points[breakpoint + 1:]:
+    if old_point == point:
+      continue
+    #print(f"The point we're looking at: {point}")
+    #print(f"Old point: {old_point}")
+    lat2 = point[1]
+    lon2 = point[0]
+    coord_2 = utm.from_latlon(lat2,lon2)
+    diff_y = coord_2[0] - coord_1[0]
+    diff_x = coord_2[1] - coord_1[1]
+    slope = diff_y / diff_x
+    heading = math.degrees(math.atan(slope))
+    if old_heading == 361:
+      old_heading = heading
+    new_heading = heading
+    #print(f"coord_1: {coord_1} coord_2: {coord_2} diff_y: {diff_y} diff_x: {diff_x}")
+    distance = math.sqrt(diff_x ** 2 + diff_y ** 2)
+    breakpoint += 1
+    if distance > 400 or abs(old_heading - new_heading) > 3: #400 is an arbitrary constant for distance allowed before streets are considered seperate. Deeper analysis required to choose apropriate measurement
+      verified_streets = verify_street(points, breakpoint = breakpoint + 1) #adding +1 to breakpoint to seperate street coordinates
+      verified_streets.append(verified_street)
+      #print(f"appended streets: {verified_streets} breakpoint: {breakpoint}")
+      return verified_streets
+    else:
+      verified_street.append(point)
+      lat1 = lat2
+      lon1 = lon2
+      coord_1 = coord_2
+    old_point = point
+    old_heading = new_heading
+  verified_streets.append(verified_street)
+  #print(f"Verified street: {verified_street} breakpoint: {breakpoint}")
+  return verified_streets
+
+# USE Google Maps API key
+API_KEY = 
+
+# Pitch (vertical tilt) in degrees
+key_pitch = 0 # Slightly tilted upwards
+
+# Image size
+size = "640x480"
+
+
+def get_street_image(latlng, heading, streetnm, zipcode, zoom):
+    URL = f"https://maps.googleapis.com/maps/api/streetview?size={size}&location={latlng}&pitch={key_pitch}&heading={heading}&fov={zoom}&key={API_KEY}"
+
+    response = requests.get(URL)
+    folder_path = f"images/{streetnm}" # File directory changed from /content/images, as /content is cwd
+    if not os.path.exists(folder_path):
+      if not os.path.exists("images"):
+        os.mkdir("images")
+      os.mkdir(folder_path)
+    file_name = latlng + "HEADING" + str(heading) + "ZOOM" + str(zoom) + ".jpg"
+    file_path = os.path.join(folder_path, file_name)
+    with open(file_path, "wb") as f:
+        f.write(response.content)
+    #addToTable(zipcode, streetnm, latlng, URL)
+    return file_path
+
+
+
+def collect_images(lat1,lon1,lat2,lon2, strName, zipcode):
+  coord_1 = utm.from_latlon(lat1,lon1) #transform into UTM coodinates 1 and 2
+  coord_2 = utm.from_latlon(lat2,lon2)
+
+  diff_y = coord_2[0] - coord_1[0] #difference between y1 and y2
+  diff_x = coord_2[1] - coord_1[1] #difference between x1 and x2
+
+  slope = diff_y / diff_x
+  print('the slope is: ', slope)
+
+  heading = math.degrees(math.atan(slope)) + 90 #plus 90 to get side view
+  if heading < 0: #making sure the heading is positive
+    heading += 360
+
+  distance = math.sqrt(diff_x ** 2 + diff_y ** 2)
+  #print(f'the distance is: {distance} meters')
+
+  constant_distance = 40 #distance between pictures
+  period = int(distance/constant_distance)
+  print('the period/amount of pictures is :' , period)
+
+  print()
+  interval_x = diff_x/period
+  interval_y = diff_y/period
+
+  for n in range(1,period):
+    utm_point = (coord_1[0] + n*interval_y, coord_1[1] + n*interval_x)
+    latlot_point = utm.to_latlon(utm_point[0],utm_point[1],18,'T')
+    #Take street images from both sides of street (heading+180)
+    get_street_image(str(latlot_point[0]) + ","+ str(latlot_point[1]), heading, strName, zipcode, 58) # one side of the street
+    get_street_image(str(latlot_point[0]) + ","+ str(latlot_point[1]), heading+180, strName, zipcode, 90) #other side of the street
+
+from shapely.geometry import Point, MultiLineString, LineString
+from shapely.ops import split
+zipgdf = gpd.read_file("./Zipcodeareas.geojson")
+
+# Make sure both GeoDataFrames have the same CRS
+manhattan_centerline_gdf_zip = manhattan_centerline_gdf.to_crs(zipgdf.crs)
+
+# Extract points from MultiLineString geometries
+points = []
+for geom in manhattan_centerline_gdf_zip.geometry:
+    if isinstance(geom, MultiLineString): #if the geom type is multiline string
+        for line in geom.geoms:
+            points.extend([Point(coord) for coord in line.coords])
+    elif isinstance(geom, LineString): # if the type is regular line string
+        points.extend([Point(coord) for coord in geom.coords])
+    else:
+        print("Unexpected geometry type: ",type(geom))
+
+
+# Create a GeoDataFrame from the points list gathered above
+points_gdf = gpd.GeoDataFrame(geometry=points, crs=manhattan_centerline_gdf.crs)
+manhattan_centerline_gdf.plot()
+
+# Did a spatial join to find which zip code areas contain these points
+joined_gdf = gpd.sjoin(points_gdf, zipgdf)#, how='inner', ops='within')
+
+#Following line shows joined_gdf contains zipcodes outside of manhattan
+#print(f"joined gdf = {joined_gdf['modzcta'].unique()}")
+
+# Filter zipgdf to include only areas that contain Manhattan points
+filtered_zipgdf = zipgdf[zipgdf.index.isin(joined_gdf.index_right)]
+filtered_zipgdf.plot()
+
+#further removeed specific zipcodes manually that were accidentally left in the image but is not manhattan. Not sure why there were unexpected outliers
+filtered_zipgdf = filtered_zipgdf[~zipgdf['modzcta'].isin(['11101','10306', '11222', '11215', '10451','99999', '10452', '10457', '11201','11215', '11239', '11693','11694', '10468', '10460', '10467', '10463', '10475'])]
+print("Zipcodes in filtered file:", filtered_zipgdf['modzcta'].unique()) # see what zipcodes are leftover in file
+
+import matplotlib.pyplot as plt
+
+# Perform spatial join to merge data, before was just filtering based on the two datas, but this actually merges them into one
+merged_gdf = gpd.sjoin(manhattan_centerline_gdf, filtered_zipgdf, how='inner', predicate='intersects')
+copy_firstmerged = merged_gdf.copy()
+
+
+# Rename the geometry column from manhatta gdf and also add the zipcode polygon geometry
+merged_gdf = merged_gdf.rename(columns={'geometry': 'street_geometry'})
+merged_gdf['zipcode_geometry'] = merged_gdf.apply(lambda row: filtered_zipgdf.loc[row.index_right, 'geometry'], axis=1)
+
+merged_gdf.head()
+
+# Setting the active geometry to street_geometry for spatial operations so it doesn't confuse which geometry to use
+merged_gdf = merged_gdf.set_geometry('street_geometry')
+
+
+# Group by zipcode. There were actually a couple zipcode columns, this seemed the best to use, but maybe one of the others is more convenient if you want to try
+streets_by_zipcode = merged_gdf.groupby('modzcta')
+
+
+# Function to get streets that intersect with specific zipcode,
+# NOTE: it does not cut off a street and the streets extend out the zipcode area, so we clip it later in the visualize zipcode function
+def get_streets_in_zipcode(zipcode):
+    if zipcode in streets_by_zipcode.groups:
+        return streets_by_zipcode.get_group(zipcode)
+    else:
+        return None
+
+#make it a function to call for any zipcode
+def visualize_zipcode(zipcode,street_nm):
+  fig, ax = plt.subplots(figsize=(12, 8))
+
+  #plots all zipcodes in manhattan
+  filtered_zipgdf.plot(ax=ax, color='purple', alpha=0.5, edgecolor='black')
+
+  #get group of streets in specific zipcode
+  streets_in_zipcode = get_streets_in_zipcode(zipcode)
+
+  if streets_in_zipcode is None: #wrote this specifically for the central park zipcode as it had no data, but maybe could take out
+    print(f"No street data found for zipcode {zipcode}")
+    return None, None
+  else:
+    #gets the zipcode geometry for the secific zipcode
+    zipcode_polygon = streets_in_zipcode['zipcode_geometry'].iloc[0]
+
+
+  # Clip streets to the zipcode polygon in figure 1
+  buffer_distance = 0.00006  # can adjust value. Created a buffer because some streets in a polygon weren't getting read properly and were being plotted in broken segments
+  buffered_zipcode_polygon = zipcode_polygon.buffer(buffer_distance)
+  clipped_streets = gpd.clip(streets_in_zipcode, buffered_zipcode_polygon)
+  #clipped_streets2 = clipped_streets.groupby('street_nm')
+  #print("Streets in zipcode for clipped streets are:", clipped_streets2['street_nm'].unique() ) #more organized than one above when printing out data
+
+  # Plot zipcode polygon
+  gpd.GeoSeries([zipcode_polygon]).plot(ax=ax, color='green', edgecolor='blue', alpha=0.5)
+
+  #test to get a specific street in clipped streets
+  street_clipped = clipped_streets[clipped_streets['street_nm'] == street_nm]
+  if street_clipped.empty:
+    print(f"No street data found for {street_nm} in zipcode {zipcode}")
+    return None, None
+  #plot clipped streets overlapping
+  clipped_streets.plot(ax=ax, color='orange', edgecolor='blue', alpha=0.5)
+
+  #zoomed in view of polygon
+  fig2, ax2 = plt.subplots(figsize=(12, 8))
+  gpd.GeoSeries([zipcode_polygon]).plot(ax=ax2, color='lightblue', edgecolor='yellow', alpha=0.5)
+  clipped_streets.plot(ax=ax2, color='black', edgecolor='blue', alpha=0.5)
+  #just example to visualise the streets
+  street_clipped.plot(ax=ax2, color='orange', alpha=0.5)
+  return zipcode_polygon, street_clipped
+
+#check and get coordinates for specific zipcode.
+visualize_zipcode('10029', '1 Avenue')
+
+#visualize_zipcode('10035')
+# visualize_zipcode('10000') # note this is central park, so doesn't have data
+# print(streetcoords)
+
+store_df = pd.DataFrame(columns=['zipcode', 'street_name', 'coordinates', 'api_url'])
+
+def addToTable(zipcode, streetnm, coordinates, APIURL):
+  global store_df, current_zipcode #lets us know that we want to use these variables inside
+
+  #empties and reset Dataframe
+  store_df = pd.DataFrame(columns=['zipcode', 'street_name', 'coordinates', 'api_url'])
+'''
+  if existing_row.empty:
+    #add new row
+    add_row = pd.DataFrame( {
+        'zipcode': [zipcode],
+        'street_name': [streetnm],
+        'coordinates': [coordinates],
+        'api_url': [APIURL]
+    })
+
+    store_df = pd.concat([store_df, add_row], ignore_index=True)
+    print(f"Data added for {streetnm} in another coordinate in zipcode {zipcode}")
+  else:
+    # If the street and coordinates exist, update the existing row
+    index = existing_row.index[0]
+    store_df.loc[index, 'api_url'] = APIURL
+  return store_df
+'''
+
 #Trying collecting images for a specific street in zipcode
 zipcode = '10040'
 street_name = 'West 192 Street'
